@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DC Motor Control Center and Occupancy Grid</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <h1>DC Motor Controller and Occupancy Grid</h1>
+
+  <!-- Motor control section -->
+  <div class="motor-control">
+    <button id="forward" onmousedown="sendCommand('forward')" onmouseup="sendCommand('stop')">Forward</button>
+    <button id="backward" onmousedown="sendCommand('backward')" onmouseup="sendCommand('stop')">Backward</button>
+    <button id="right" onmousedown="sendCommand('right')" onmouseup="sendCommand('stop')">Right</button>
+    <button id="left" onmousedown="sendCommand('left')" onmouseup="sendCommand('stop')">Left</button>
+    <button id="stop" onclick="sendCommand('stop')">Stop</button>
+    <p>Status: <span id="status">Not connected</span></p>
+  </div>
+
+  <!-- Occupancy Grid and Camera Feed Section -->
+  <div class="container">
+    <div class="grid-container">
+      <div id="robot-pos">Robot Position: (unknown)</div>
+      <div id="grid-container">Loading grid...</div>
+      <div id="person-info">No person detected</div>
+      <!-- Improved compass container using an inline SVG arrow -->
+      <div id="compass-container">
+        <svg id="compass-arrow" viewBox="0 0 64 64">
+          <polygon points="32,5 55,45 32,35 9,45" fill="white" stroke="black" stroke-width="2"/>
+        </svg>
+        <div id="compass-label">Direction: N/A</div>
+      </div>
+    </div>
+    <div class="video-container">
+      <h2>Live Camera Feed</h2>
+      <img src="/video_feed" alt="Camera Feed">
+    </div>
+  </div>
+
+  <div class="legend">
+    <h3>Legend</h3>
+    <div class="legend-item">
+      <span class="legend-color" style="background-color: blue;"></span> Robot Position
+    </div>
+    <div class="legend-item">
+      <span class="legend-color" style="background-color: yellow;"></span> Unconscious Person
+    </div>
+    <div class="legend-item">
+      <span class="legend-color" style="background-color: lightgreen;"></span> Conscious Person
+    </div>
+    <div class="legend-item">
+      <span class="legend-color" style="background-color: rgb(255,0,0);"></span> Occupied
+    </div>
+    <div class="legend-item">
+      <span class="legend-color" style="background-color: rgb(255,255,255);"></span> Free
+    </div>
+  </div>
+
+  <script>
+    // Instead of a WebSocket, we use HTTP endpoints.
+    // Track the last command so that repeated requests aren’t sent unnecessarily.
+    let lastCommand = 'stop';
+    document.getElementById("status").innerText = "Connected";
+
+    function sendCommand(command) {
+      // Only send a request if the command has changed
+      if (lastCommand !== command) {
+        lastCommand = command;
+        fetch(`/command?cmd=${command}`)
+          .then(response => response.text())
+          .then(text => console.log("Command response:", text))
+          .catch(err => console.error("Error sending command:", err));
+        console.log("Sent:", command);
+      }
+    }
+
+    // Occupancy Grid functionality
+    function fetchGrid() {
+      console.log("Fetching grid data at " + new Date().toLocaleTimeString());
+      fetch('/grid?ts=' + Date.now(), { cache: "no-store" })
+        .then(response => {
+          if (!response.ok) {
+            throw new Error("Network response was not ok");
+          }
+          return response.json();
+        })
+        .then(data => {
+          console.log("Received grid data:", data);
+          renderGrid(data.grid, data.robot_row, data.robot_col, data.person_markers);
+          updateRobotPosition(data.robot_x, data.robot_y);
+          updatePersonInfo(data.person_markers);
+          // Update the compass arrow if yaw data is available.
+          if (data.yaw !== undefined) {
+            updateCompass(data.yaw);
+          }
+        })
+        .catch(error => {
+          console.error('Error in fetchGrid:', error);
+        });
+    }
+
+    function updateRobotPosition(x, y) {
+      let posElem = document.getElementById('robot-pos');
+      posElem.textContent = `Robot Position: (x=${x.toFixed(1)} cm, y=${y.toFixed(1)} cm)`;
+    }
+
+    function updatePersonInfo(markers) {
+      let infoElem = document.getElementById('person-info');
+      if (markers && markers.length > 0) {
+        let infoText = markers.map(m => `Person at (row=${m.grid_row}, col=${m.grid_col}) - ${m.status}`).join("; ");
+        infoElem.textContent = infoText;
+      } else {
+        infoElem.textContent = "No person detected";
+      }
+    }
+
+    function renderGrid(grid, robotRow, robotCol, markers) {
+      let container = document.getElementById('grid-container');
+      let rows = grid.length;
+      let cols = grid[0].length;
+      let html = '<table>';
+      for (let r = rows - 1; r >= 0; r--) {
+        html += '<tr>';
+        for (let c = 0; c < cols; c++) {
+          if (r === robotRow && c === robotCol) {
+            html += `<td style="background-color: blue;"></td>`;
+            continue;
+          }
+          let marker = markers ? markers.find(m => m.grid_row === r && m.grid_col === c) : null;
+          if (marker) {
+            let color = (marker.status === "Unconscious") ? "yellow" : "lightgreen";
+            html += `<td style="background-color: ${color};"></td>`;
+            continue;
+          }
+          let p = grid[r][c];
+          let redVal = 255;
+          let greenVal = Math.round(255 * (1 - p));
+          let blueVal = Math.round(255 * (1 - p));
+          let color = `rgb(${redVal},${greenVal},${blueVal})`;
+          html += `<td style="background-color: ${color};"></td>`;
+        }
+        html += '</tr>';
+      }
+      html += '</table>';
+      container.innerHTML = html;
+    }
+
+    function updateCompass(yaw) {
+      const arrowElem = document.getElementById('compass-arrow');
+      const labelElem = document.getElementById('compass-label');
+      // Rotate the SVG arrow so that 0° means pointing up.
+      arrowElem.style.transform = `rotate(${yaw}deg)`;
+      labelElem.textContent = `Direction: ${yaw.toFixed(1)}°`;
+    }
+
+    document.addEventListener("DOMContentLoaded", function() {
+      setInterval(fetchGrid, 1000); // Poll grid every 100ms
+    });
+  </script>
+</body>
+</html>

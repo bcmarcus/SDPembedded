@@ -16,8 +16,6 @@ MPU6050::MPU6050(TwoWire &w) : wire(w){
 }
 
 byte MPU6050::begin(int gyro_config_num, int acc_config_num){
-  this->wire.begin();
-  this->wire.setClock(32000000);
 	lastCall = micros();
 	deltaTime = 0;
 
@@ -36,7 +34,7 @@ byte MPU6050::begin(int gyro_config_num, int acc_config_num){
   setAccConfig(acc_config_num);
   byte status = writeData(wire, MPU6050_ADDR, MPU6050_PWR_MGMT_1_REGISTER, 0x01); // check only the last connection with status
   
-	this->calibrate(true, true);
+  this->calibrate(true, true);
 
   this->updateFast();
   angleX = this->getAccAngleX();
@@ -162,7 +160,14 @@ void MPU6050::calibrate(bool is_calc_gyro, bool is_calc_acc){
   
   for(int i = 0; i < CALIB_OFFSET_NB_MES; i++){
     this->fetchData();
-    ag[0] += accX;
+    Serial.print("ACCX: "); Serial.print(accX);
+    Serial.print(" ACCY: "); Serial.print(accY);
+    Serial.print(" ACCZ: "); Serial.print(accZ - 1.0);
+    Serial.print(" GYROX: "); Serial.print(gyroX);
+    Serial.print(" GYROY: "); Serial.print(gyroY);
+    Serial.print(" GYROZ: "); Serial.println(gyroZ);
+	    
+	ag[0] += accX;
     ag[1] += accY;
     ag[2] += (accZ-1.0);
     ag[3] += gyroX;

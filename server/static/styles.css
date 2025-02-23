@@ -1,0 +1,126 @@
+* {
+    font-family: Arial, Helvetica, sans-serif;
+    margin: 0;
+    background-color: rgb(0, 0, 0);
+}
+
+body {
+    color: white;
+}
+
+h1 {
+    padding: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    background: black;
+    color: white;
+    font-size: 2.5rem;
+}
+
+.container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+}
+
+.grid-container, .video-container {
+    flex: 1;
+    min-width: 300px;
+}
+
+/* Ensure grid container is always square */
+#grid-container {
+    width: 100%;
+    max-width: 600px; /* Adjust as needed */
+    aspect-ratio: 1;
+    margin: auto;
+}
+
+/* Make the table fill the grid container and enforce fixed layout */
+.grid-container table {
+    width: 100%;
+    height: 100%;
+    table-layout: fixed;
+}
+
+/* Ensure each grid cell stays a perfect square */
+.grid-container td {
+    aspect-ratio: 1 / 1;
+}
+
+button {
+    padding: 20px 20px;
+    background-color: #034078;
+    color: white;
+    font-size: 1.5rem;
+    width: 46%;
+}
+
+#stop {
+    width: 92.3%;
+    background-color: rgb(134, 23, 23);
+    color: white;
+    font-size: 1.5rem;
+}
+
+#status {
+    color: white;
+    font-size: 1.5rem;
+}
+
+p {
+    color: white;
+    font-size: 1.5rem;
+}
+
+.legend {
+    margin-top: 20px;
+    padding: 10px;
+    border-top: 2px solid #000;
+}
+
+.legend-item {
+    display: inline-block;
+    margin-right: 20px;
+    vertical-align: middle;
+}
+
+.legend-color {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    vertical-align: middle;
+    margin-right: 5px;
+    border: 1px solid #ccc;
+}
+
+.motor-control {
+    text-align: center;
+    padding: 20px;
+}
+
+button {
+    margin: 10px;
+}
+
+/* Improved Compass Styles */
+#compass-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 10px;
+}
+
+#compass-arrow {
+  width: 50px;
+  height: 50px;
+  transform-origin: center center;
+  transition: transform 0.3s ease;
+}
+
+#compass-label {
+  font-size: 1rem;
+  margin-top: 5px;
+}

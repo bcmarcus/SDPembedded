@@ -4,3 +4,9 @@
 .vscode/launch.json
 .vscode/ipch
 .vscode
+.DS_Store
+*.pt
+*.pyc
+lib/BMP180
+lib/GY87
+lib/HMC5883L

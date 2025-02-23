@@ -28,12 +28,12 @@
 #define MPU6050_ACCEL_OUT_REGISTER    0x3B
 
 #define RAD_2_DEG             57.29578 // [°/rad]
-#define CALIB_OFFSET_NB_MES   2500
+#define CALIB_OFFSET_NB_MES   500
 #define TEMP_LSB_2_DEGREE     340.0    // [bit/celsius]
 #define TEMP_LSB_OFFSET       12412.0
 
 #define DEFAULT_GYRO_COEFF    0.98
-#define DEFAULT_BETA          0.046f            // 2 * proportional gain
+#define DEFAULT_BETA          0.0046f            // 2 * proportional gain
 
 using namespace I2Cdev;
 
