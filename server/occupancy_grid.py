@@ -2,6 +2,7 @@
 import numpy as np
 import math
 from threading import RLock
+import time
 
 class OccupancyGrid:
     def __init__(self, field_size_cm, cell_size_cm):
@@ -139,7 +140,15 @@ class OccupancyGrid:
             # Store the current distances for future comparisons.
             self.previous_distances = distances.copy()
 
+    # In OccupancyGrid class, optimize update frequency with a max_updates_per_second limiter
     def update_from_sensors(self, distances, yaw, dt, move_command="stop"):
+        # Add rate limiting
+        current_time = time.time()
+        if hasattr(self, 'last_update_time') and current_time - self.last_update_time < 0.02:  # Max 50 updates/second
+            return  # Skip this update if too soon after the last one
+        
+        self.last_update_time = current_time
+        
         with self.lock:
             self.yaw = yaw
             self.latest_forward = distances.get('forward') if (distances.get('forward', 501) <= 500) else None

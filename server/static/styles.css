@@ -105,7 +105,7 @@ button {
     margin: 10px;
 }
 
-/* Improved Compass Styles */
+/* Compass Styles */
 #compass-container {
   display: flex;
   flex-direction: column;
@@ -123,4 +123,25 @@ button {
 #compass-label {
   font-size: 1rem;
   margin-top: 5px;
+}
+
+/* Video feed container */
+.video-container {
+  padding: 10px;
+  text-align: center;
+}
+
+.video-container h2 {
+  margin-bottom: 10px;
+}
+
+.video-container img {
+  max-width: 100%;
+  border: 2px solid #444;
+}
+
+/* Robot and person info */
+#robot-pos, #person-info {
+  margin: 10px 0;
+  font-size: 1rem;
 }

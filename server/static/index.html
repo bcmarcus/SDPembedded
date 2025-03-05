@@ -16,7 +16,7 @@
     <button id="right" onmousedown="sendCommand('right')" onmouseup="sendCommand('stop')">Right</button>
     <button id="left" onmousedown="sendCommand('left')" onmouseup="sendCommand('stop')">Left</button>
     <button id="stop" onclick="sendCommand('stop')">Stop</button>
-    <p>Status: <span id="status">Not connected</span></p>
+    <p>Status: <span id="status">Connecting...</span></p>
   </div>
 
   <!-- Occupancy Grid and Camera Feed Section -->
@@ -25,7 +25,7 @@
       <div id="robot-pos">Robot Position: (unknown)</div>
       <div id="grid-container">Loading grid...</div>
       <div id="person-info">No person detected</div>
-      <!-- Improved compass container using an inline SVG arrow -->
+      <!-- Compass container using an inline SVG arrow -->
       <div id="compass-container">
         <svg id="compass-arrow" viewBox="0 0 64 64">
           <polygon points="32,5 55,45 32,35 9,45" fill="white" stroke="black" stroke-width="2"/>
@@ -59,48 +59,110 @@
   </div>
 
   <script>
-    // Instead of a WebSocket, we use HTTP endpoints.
-    // Track the last command so that repeated requests aren’t sent unnecessarily.
-    let lastCommand = 'stop';
-    document.getElementById("status").innerText = "Connected";
+    console.log("Script loaded at " + new Date().toISOString());
 
+    // WebSocket connection
+    let socket;
+    let lastCommand = 'stop';
+    let isConnected = false;
+    let reconnectTimer = null;
+    
+    // Connection status element
+    const statusElement = document.getElementById("status");
+    
+    // Function to establish WebSocket connection
+    function connectWebSocket() {
+      // Get current hostname and determine WebSocket URL
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${wsProtocol}//${window.location.hostname}:8081`;
+      
+      console.log(`Connecting to WebSocket at ${wsUrl}`);
+      statusElement.textContent = "Connecting...";
+      statusElement.style.color = "orange";
+      
+      // Create WebSocket connection
+      socket = new WebSocket(wsUrl);
+      
+      // Connection opened
+      socket.addEventListener('open', function(event) {
+        console.log('WebSocket connection established');
+        statusElement.textContent = "Connected";
+        statusElement.style.color = "green";
+        isConnected = true;
+        
+        // Clear any pending reconnect timer
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+      });
+      
+      // Listen for messages
+      socket.addEventListener('message', function(event) {
+        try {
+          const message = JSON.parse(event.data);
+          
+          // Handle different message types
+          if (message.type === 'gridData') {
+            // Update grid with received data
+            renderGrid(
+              message.data.grid, 
+              message.data.robot_row, 
+              message.data.robot_col, 
+              message.data.person_markers
+            );
+            updateRobotPosition(message.data.robot_x, message.data.robot_y);
+            updatePersonInfo(message.data.person_markers);
+            
+            // Update compass if yaw data is available
+            if (message.data.yaw !== undefined) {
+              updateCompass(message.data.yaw);
+            }
+          } else {
+            console.log('Unknown message type:', message.type);
+          }
+        } catch (error) {
+          console.error('Error processing WebSocket message:', error);
+        }
+      });
+      
+      // Connection closed
+      socket.addEventListener('close', function(event) {
+        console.log('WebSocket connection closed');
+        statusElement.textContent = "Disconnected";
+        statusElement.style.color = "red";
+        isConnected = false;
+        
+        // Schedule reconnection attempt
+        if (!reconnectTimer) {
+          reconnectTimer = setTimeout(connectWebSocket, 2000);
+        }
+      });
+      
+      // Connection error
+      socket.addEventListener('error', function(event) {
+        console.error('WebSocket error:', event);
+        statusElement.textContent = "Connection Error";
+        statusElement.style.color = "red";
+      });
+    }
+
+    // Function to send command via WebSocket
     function sendCommand(command) {
-      // Only send a request if the command has changed
-      if (lastCommand !== command) {
+      if (isConnected && lastCommand !== command) {
         lastCommand = command;
+        socket.send(JSON.stringify({ command: command }));
+        console.log("Sent command:", command);
+      } else if (!isConnected) {
+        // Fallback to HTTP if WebSocket is not connected
         fetch(`/command?cmd=${command}`)
           .then(response => response.text())
-          .then(text => console.log("Command response:", text))
+          .then(text => console.log(text))
           .catch(err => console.error("Error sending command:", err));
-        console.log("Sent:", command);
       }
     }
 
-    // Occupancy Grid functionality
-    function fetchGrid() {
-      console.log("Fetching grid data at " + new Date().toLocaleTimeString());
-      fetch('/grid?ts=' + Date.now(), { cache: "no-store" })
-        .then(response => {
-          if (!response.ok) {
-            throw new Error("Network response was not ok");
-          }
-          return response.json();
-        })
-        .then(data => {
-          console.log("Received grid data:", data);
-          renderGrid(data.grid, data.robot_row, data.robot_col, data.person_markers);
-          updateRobotPosition(data.robot_x, data.robot_y);
-          updatePersonInfo(data.person_markers);
-          // Update the compass arrow if yaw data is available.
-          if (data.yaw !== undefined) {
-            updateCompass(data.yaw);
-          }
-        })
-        .catch(error => {
-          console.error('Error in fetchGrid:', error);
-        });
-    }
-
+    // Grid rendering functions
     function updateRobotPosition(x, y) {
       let posElem = document.getElementById('robot-pos');
       posElem.textContent = `Robot Position: (x=${x.toFixed(1)} cm, y=${y.toFixed(1)} cm)`;
@@ -118,6 +180,11 @@
 
     function renderGrid(grid, robotRow, robotCol, markers) {
       let container = document.getElementById('grid-container');
+      if (!grid || !grid.length) {
+        container.innerHTML = "Waiting for grid data...";
+        return;
+      }
+      
       let rows = grid.length;
       let cols = grid[0].length;
       let html = '<table>';
@@ -150,13 +217,15 @@
     function updateCompass(yaw) {
       const arrowElem = document.getElementById('compass-arrow');
       const labelElem = document.getElementById('compass-label');
-      // Rotate the SVG arrow so that 0° means pointing up.
-      arrowElem.style.transform = `rotate(${yaw}deg)`;
+      // Rotate the SVG arrow in the opposite direction to match physical rotation
+      arrowElem.style.transform = `rotate(-${yaw}deg)`;
       labelElem.textContent = `Direction: ${yaw.toFixed(1)}°`;
     }
 
+    // Initialize connection when document is loaded
     document.addEventListener("DOMContentLoaded", function() {
-      setInterval(fetchGrid, 1000); // Poll grid every 100ms
+      // Connect to WebSocket
+      connectWebSocket();
     });
   </script>
 </body>
