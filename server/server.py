@@ -20,7 +20,7 @@ import websockets
 import sys
 
 from occupancy_grid import OccupancyGrid
-from person_tracker import PersonTracker
+from person_tracker import calculate_EAR, calculate_head_angles, determine_pose, PersonTracker
 from ultrasonic_sensor import UltrasonicSensor
 
 # Global constants
@@ -88,32 +88,6 @@ def camera_process(shared_frame_data, shared_person_status):
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         print("[INFO] Camera initialized in camera process")
         
-        # Helper functions for processing
-        def calculate_EAR(landmarks, eye_indices):
-            p2_minus_p6 = np.linalg.norm(landmarks[eye_indices[1]] - landmarks[eye_indices[5]])
-            p3_minus_p5 = np.linalg.norm(landmarks[eye_indices[2]] - landmarks[eye_indices[4]])
-            p1_minus_p4 = np.linalg.norm(landmarks[eye_indices[0]] - landmarks[eye_indices[3]])
-            return (p2_minus_p6 + p3_minus_p5) / (2.0 * p1_minus_p4 + 1e-6)
-
-        def calculate_head_angles(face_landmarks, image_width, image_height):
-            left_eye_outer = face_landmarks.landmark[33]
-            right_eye_outer = face_landmarks.landmark[263]
-            x1, y1 = left_eye_outer.x * image_width, left_eye_outer.y * image_height
-            x2, y2 = right_eye_outer.x * image_width, right_eye_outer.y * image_height
-            angle_radians_roll = np.arctan2(y1 - y2, x2 - x1)
-            angle_degrees_roll = np.degrees(angle_radians_roll)
-            nose_tip = face_landmarks.landmark[1]
-            chin = face_landmarks.landmark[152]
-            x_nose, y_nose = nose_tip.x * image_width, nose_tip.y * image_height
-            x_chin, y_chin = chin.x * image_width, chin.y * image_height
-            angle_radians_pitch = np.arctan2(y_chin - y_nose, x_chin - x_nose)
-            pitch_angle_adjusted = np.degrees(angle_radians_pitch) - 90
-            return angle_degrees_roll, pitch_angle_adjusted
-
-        def determine_pose(keypoints_xy, bbox, head_angles=None, objects_detected=[]):
-            # This would normally contain pose determination logic
-            return "unknown"
-        
         last_frame_time = time.time()
         
         print("[INFO] Camera process initialized and ready")
@@ -140,6 +114,26 @@ def camera_process(shared_frame_data, shared_person_status):
             # Process frame with AI models
             image = frame.copy()
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            
+            # Object detection - do this first to detect chairs, etc.
+            objects_detected = []
+            object_results = object_model(image)
+            for result in object_results:
+                boxes = result.boxes
+                if boxes is not None:
+                    for box in boxes:
+                        x1_obj, y1_obj, x2_obj, y2_obj = box.xyxy[0].cpu().numpy().astype('int')
+                        confidence_obj = box.conf[0].cpu().numpy() * 100
+                        class_detected_number_obj = int(box.cls[0])
+                        class_detected_name_obj = result.names[class_detected_number_obj]
+                        objects_detected.append({
+                            'name': class_detected_name_obj,
+                            'bbox': (x1_obj, y1_obj, x2_obj, y2_obj),
+                            'confidence': confidence_obj
+                        })
+                        # Optionally draw bounding boxes for objects in debug mode
+                        if DEBUG_CAMERA:
+                            cv2.rectangle(image, (x1_obj, y1_obj), (x2_obj, y2_obj), (255, 0, 0), 1)
             
             # Pose detection
             detections = []
@@ -173,7 +167,10 @@ def camera_process(shared_frame_data, shared_person_status):
                                 break
                         else:
                             eye_status = "Eye Status Unknown"
-                        pose_label = determine_pose(keypoints_xy, (x1, y1, x2, y2), head_angles)
+                        
+                        # Call the imported determine_pose function
+                        pose_label = determine_pose(keypoints_xy, (x1, y1, x2, y2), head_angles, objects_detected)
+                        
                         detections.append({
                             'bbox': (x1, y1, x2, y2),
                             'pose': pose_label,
@@ -190,20 +187,23 @@ def camera_process(shared_frame_data, shared_person_status):
                 color = (0, 0, 255) if is_unconscious else (0, 255, 0)
                 status_label = 'Unconscious' if is_unconscious else 'Conscious'
                 
+                # Get the current pose and eye status from the last data entry
+                current_data = track['data'][-1] if track['data'] else {}
+                current_pose = current_data.get('pose', 'unknown')
+                current_eye_status = current_data.get('eye_status', 'unknown')
+                
                 # Draw bounding box
                 cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), 3)
                 
                 if DEBUG_CAMERA:
                     # Show all information at the top when in debug mode
-                    info_text = f'ID {track_id} - {status_label} - Pose: {pose_label} - Eye: {eye_status}'
+                    info_text = f'ID {track_id} - {status_label} - Pose: {current_pose} - Eye: {current_eye_status}'
                     cvzone.putTextRect(image, info_text, [x1 + 8, y1 - 40], 
                                      thickness=2, scale=1, colorR=color)
                 else:
                     # Show only ID and consciousness in non-debug mode
                     cvzone.putTextRect(image, f'ID {track_id} - {status_label}', [x1 + 8, y1 - 40], 
                                      thickness=2, scale=1, colorR=color)
-            
-
             
             # Encode the processed frame for streaming
             ret2, buffer = cv2.imencode('.jpg', image)
@@ -215,12 +215,22 @@ def camera_process(shared_frame_data, shared_person_status):
                 # Extract person status for grid markers
                 if person_tracker.tracks:
                     person_status = "Conscious"
-                    for track in person_tracker.tracks.values():
+                    detected_track_id = None
+                    
+                    # First check for any unconscious person - they take priority
+                    for track_id, track in person_tracker.tracks.items():
                         if person_tracker.check_unconscious(track):
                             person_status = "Unconscious"
+                            detected_track_id = track_id
                             break
-                    # Update shared person status
+                    
+                    # If no unconscious person found, use the first track
+                    if detected_track_id is None and person_tracker.tracks:
+                        detected_track_id = next(iter(person_tracker.tracks.keys()))
+                        
+                    # Update shared person status with both status and track ID
                     shared_person_status['status'] = person_status
+                    shared_person_status['track_id'] = detected_track_id
     
     except Exception as e:
         print(f"[CRITICAL] Fatal error in camera process: {e}")
@@ -309,26 +319,28 @@ def grid_process(shared_sensor_data, shared_grid_data, shared_person_status, mot
                         # Update the occupancy grid
                         occupancy_grid.update_from_sensors(sensor_data_for_grid, relative_yaw, dt, current_motor_command)
                 
-                # Get current grid data
+                # Check for person status from camera process
+                person_status = shared_person_status.get('status')
+                person_track_id = shared_person_status.get('track_id')
+                
+                if person_status and occupancy_grid.latest_forward is not None:
+                    yaw_rad = math.radians(occupancy_grid.yaw)
+                    person_x_cm = occupancy_grid.robot_x + occupancy_grid.latest_forward * math.sin(yaw_rad)
+                    person_y_cm = occupancy_grid.robot_y + occupancy_grid.latest_forward * math.cos(yaw_rad)
+                    marker_row, marker_col = occupancy_grid.world_to_grid(person_x_cm, person_y_cm)
+                    
+                    # Add the person marker to the grid's persistent list with track ID
+                    # This allows tracking the same person as they move
+                    occupancy_grid.add_person_marker(marker_row, marker_col, person_status, person_track_id)
+                
+                # Get current grid data (now includes all person markers)
                 grid_data = occupancy_grid.get_grid_data()
                 
                 # Update shared grid data for WebSocket and HTTP processes
                 for key, value in grid_data.items():
                     shared_grid_data[key] = value
                 
-                # Check for person status from camera process
-                person_status = shared_person_status.get('status')
-                if person_status and occupancy_grid.latest_forward is not None:
-                    yaw_rad = math.radians(occupancy_grid.yaw)
-                    person_x_cm = occupancy_grid.robot_x + occupancy_grid.latest_forward * math.sin(yaw_rad)
-                    person_y_cm = occupancy_grid.robot_y + occupancy_grid.latest_forward * math.cos(yaw_rad)
-                    marker_row, marker_col = occupancy_grid.world_to_grid(person_x_cm, person_y_cm)
-                    shared_grid_data['person_markers'] = [{"grid_row": marker_row, "grid_col": marker_col, "status": person_status}]
-                else:
-                    shared_grid_data['person_markers'] = []
-                
-                # Small sleep to prevent CPU hogging - don't make this longer!
-                # Short enough to check for new sensor data frequently
+                # Small sleep to prevent CPU hogging
                 time.sleep(0.005)  # 5ms sleep - 200Hz check rate
                 
             except Exception as e:
@@ -341,7 +353,7 @@ def grid_process(shared_sensor_data, shared_grid_data, shared_person_status, mot
         print(f"[CRITICAL] Fatal error in grid process: {e}")
         import traceback
         traceback.print_exc()
-
+        
 # ========================
 # WEBSOCKET PROCESS
 # ========================
@@ -441,7 +453,7 @@ def websocket_process(shared_grid_data, motor_command):
 # ========================
 # HTTP SERVER PROCESS
 # ========================
-def http_process(shared_frame_data, shared_grid_data):
+def http_process(shared_frame_data, shared_grid_dat, motor_command):
     """Process to handle HTTP server"""
     try:
         class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
@@ -787,7 +799,7 @@ def main():
         print("Starting HTTP Server Process...")
         http_proc = multiprocessing.Process(
             target=http_process,
-            args=(shared_frame_data, shared_grid_data),
+            args=(shared_frame_data, shared_grid_data, motor_command),
             name="HTTPProcess"
         )
         http_proc.daemon = True
