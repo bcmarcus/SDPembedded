@@ -153,8 +153,12 @@ class OccupancyGrid:
             self.yaw = yaw
             self.latest_forward = distances.get('forward') if (distances.get('forward', 501) <= 500) else None
             # Only update x,y position if a translation command is active.
-            if move_command in ["forward", "backward"]:
+            
+            
+            if move_command in ["forward", "reverse"]:
                 self.update_robot_position(distances, dt)
+            
+            
             start_row, start_col = self.get_robot_cell()
             for sensor_name, distance in distances.items():
                 if sensor_name.endswith('_angle'):
