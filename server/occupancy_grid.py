@@ -182,3 +182,18 @@ class OccupancyGrid:
                 "robot_col": self.get_robot_cell()[1],
                 "yaw": self.yaw
             }
+        
+    def reset_position(self):
+        """Reset robot position to center of the field, reset yaw to 0 degrees, and clear the occupancy grid."""
+        with self.lock:
+            # Reset robot position and orientation
+            self.robot_x = self.field_size_cm / 2.0
+            self.robot_y = self.field_size_cm / 2.0
+            self.yaw = 0.0
+            self.latest_forward = None
+            self.previous_distances = {}  # Reset distance history
+            
+            # Reset the occupancy grid data - set all cells back to the initial log odds value
+            self.log_odds_grid = np.full((self.grid_rows, self.grid_cols), -2.0, dtype=float)
+            
+            print(f"[INFO] Robot position reset to ({self.robot_x}, {self.robot_y}) with yaw=0 and occupancy grid cleared")

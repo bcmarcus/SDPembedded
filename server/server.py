@@ -27,6 +27,7 @@ from ultrasonic_sensor import UltrasonicSensor
 CAMERA = 0
 FIELD_SIZE_CM = 1250.0
 CELL_SIZE_CM = 25.0
+DEBUG_CAMERA = True
 
 # Define sensors (will be initialized in each process that needs them)
 def initialize_sensors():
@@ -61,8 +62,8 @@ def camera_process(shared_frame_data, shared_person_status):
     
     try:
         # Load YOLO models
-        pose_model = YOLO('yolo11n-pose.pt', verbose=False)
-        object_model = YOLO('yolo11n.pt', verbose=False)
+        pose_model = YOLO('yolo11l-pose.pt', verbose=False)
+        object_model = YOLO('yolo11l.pt', verbose=False)
         
         # Move models to appropriate device
         pose_model.to(device)
@@ -185,16 +186,24 @@ def camera_process(shared_frame_data, shared_person_status):
             # Draw trackers
             for track_id, track in person_tracker.tracks.items():
                 x1, y1, x2, y2 = track['bbox']
-                pose_label = track['data'][-1]['pose']
-                eye_status = track['data'][-1]['eye_status']
-                cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), 3)
-                cvzone.putTextRect(image, f'ID {track_id}', [x1 + 8, y1 - 40], thickness=2, scale=1)
-                cvzone.putTextRect(image, f'Pose: {pose_label}', [x1 + 8, y2 + 30], thickness=2, scale=1)
-                cvzone.putTextRect(image, f'Eye Status: {eye_status}', [x1 + 8, y2 + 70], thickness=2, scale=1)
                 is_unconscious = person_tracker.check_unconscious(track)
                 color = (0, 0, 255) if is_unconscious else (0, 255, 0)
-                label = 'Unconscious' if is_unconscious else 'Conscious'
-                cvzone.putTextRect(image, label, [x1 + 8, y2 + 110], thickness=2, scale=1, colorR=color)
+                status_label = 'Unconscious' if is_unconscious else 'Conscious'
+                
+                # Draw bounding box
+                cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                
+                if DEBUG_CAMERA:
+                    # Show all information at the top when in debug mode
+                    info_text = f'ID {track_id} - {status_label} - Pose: {pose_label} - Eye: {eye_status}'
+                    cvzone.putTextRect(image, info_text, [x1 + 8, y1 - 40], 
+                                     thickness=2, scale=1, colorR=color)
+                else:
+                    # Show only ID and consciousness in non-debug mode
+                    cvzone.putTextRect(image, f'ID {track_id} - {status_label}', [x1 + 8, y1 - 40], 
+                                     thickness=2, scale=1, colorR=color)
+            
+
             
             # Encode the processed frame for streaming
             ret2, buffer = cv2.imencode('.jpg', image)
@@ -263,6 +272,14 @@ def grid_process(shared_sensor_data, shared_grid_data, shared_person_status, mot
                 
                 # Get current motor command
                 current_motor_command = motor_command.get('command', 'stop')
+                
+                # Handle reset command
+                if current_motor_command == 'reset':
+                    # Reset robot position to center of the field
+                    occupancy_grid.reset_position()
+                    # Change the command back to 'stop' after processing reset
+                    motor_command['command'] = 'stop'
+                    print("[INFO] Robot position reset to center")
                 
                 if sensor_data and 'distances' in sensor_data and 'yaw' in sensor_data:
                     # Extract distances and yaw

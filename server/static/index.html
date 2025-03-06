@@ -15,7 +15,7 @@
     <button id="reverse" onmousedown="sendCommand('reverse')" onmouseup="sendCommand('stop')">Reverse</button>
     <button id="right" onmousedown="sendCommand('right')" onmouseup="sendCommand('stop')">Right</button>
     <button id="left" onmousedown="sendCommand('left')" onmouseup="sendCommand('stop')">Left</button>
-    <button id="stop" onclick="sendCommand('stop')">Stop</button>
+    <button id="reset" onclick="sendCommand('reset')" onmouseup="sendCommand('stop')">Reset Position</button>
     <p>Status: <span id="status">Connecting...</span></p>
   </div>
 
@@ -149,7 +149,7 @@
 
     // Function to send command via WebSocket
     function sendCommand(command) {
-      if (isConnected && lastCommand !== command) {
+      if (isConnected && (lastCommand !== command || command === 'reset')) {
         lastCommand = command;
         socket.send(JSON.stringify({ command: command }));
         console.log("Sent command:", command);
