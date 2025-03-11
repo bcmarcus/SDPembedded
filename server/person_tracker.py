@@ -26,19 +26,134 @@ class PersonTracker:
         self.max_distance = 50  # pixels
         self.determination_time = 3  # seconds
     
+    def bbox_iou(self, bbox1, bbox2):
+        """Calculate IoU (Intersection over Union) between two bounding boxes."""
+        x1_1, y1_1, x2_1, y2_1 = bbox1
+        x1_2, y1_2, x2_2, y2_2 = bbox2
+        
+        # Calculate intersection area
+        x_left = max(x1_1, x1_2)
+        y_top = max(y1_1, y1_2)
+        x_right = min(x2_1, x2_2)
+        y_bottom = min(y2_1, y2_2)
+        
+        if x_right < x_left or y_bottom < y_top:
+            return 0.0  # No intersection
+        
+        intersection_area = (x_right - x_left) * (y_bottom - y_top)
+        
+        # Calculate union area
+        bbox1_area = (x2_1 - x1_1) * (y2_1 - y1_1)
+        bbox2_area = (x2_2 - x1_2) * (y2_2 - y1_2)
+        union_area = bbox1_area + bbox2_area - intersection_area
+        
+        # Calculate IoU
+        if union_area == 0:
+            return 0.0
+        
+        return intersection_area / union_area
+    
+    def bbox_overlaps(self, bbox1, bbox2, threshold=0.2):
+        """Check if two bounding boxes overlap significantly."""
+        iou = self.bbox_iou(bbox1, bbox2)
+        return iou > threshold
+        
+    def merge_overlapping_detections(self, detections):
+        """Merge detections that likely belong to the same person."""
+        if not detections:
+            return []
+            
+        # Sort detections by area (largest first)
+        detections = sorted(detections, key=lambda d: 
+                          (d['bbox'][2] - d['bbox'][0]) * (d['bbox'][3] - d['bbox'][1]), 
+                          reverse=True)
+        
+        merged_detections = []
+        used_indices = set()
+        
+        for i, detection in enumerate(detections):
+            if i in used_indices:
+                continue
+                
+            merged_bbox = list(detection['bbox'])
+            merged_centroid = list(detection['centroid'])
+            eye_status = detection['eye_status']
+            pose = detection['pose']
+            overlap_count = 1
+            used_indices.add(i)
+            
+            # Check for overlaps with other detections
+            for j, other in enumerate(detections):
+                if j in used_indices or j == i:
+                    continue
+                    
+                if self.bbox_overlaps(detection['bbox'], other['bbox'], threshold=0.15):
+                    # Merge bounding boxes
+                    merged_bbox[0] = min(merged_bbox[0], other['bbox'][0])  # x1
+                    merged_bbox[1] = min(merged_bbox[1], other['bbox'][1])  # y1
+                    merged_bbox[2] = max(merged_bbox[2], other['bbox'][2])  # x2
+                    merged_bbox[3] = max(merged_bbox[3], other['bbox'][3])  # y2
+                    
+                    # Update centroid
+                    merged_centroid[0] += other['centroid'][0]
+                    merged_centroid[1] += other['centroid'][1]
+                    overlap_count += 1
+                    
+                    # Prefer "Eyes Closed" status for better safety
+                    if other['eye_status'] == "Eyes Closed":
+                        eye_status = "Eyes Closed"
+                        
+                    # Prefer sitting/lying down poses for better safety
+                    if other['pose'] in ["Sitting", "Lying Down"]:
+                        pose = other['pose']
+                        
+                    used_indices.add(j)
+            
+            # Calculate average centroid
+            if overlap_count > 1:
+                merged_centroid[0] /= overlap_count
+                merged_centroid[1] /= overlap_count
+            
+            merged_detection = {
+                'bbox': tuple(merged_bbox),
+                'centroid': tuple(merged_centroid),
+                'eye_status': eye_status,
+                'pose': pose
+            }
+            merged_detections.append(merged_detection)
+            
+        return merged_detections
+    
     def update(self, detections):
+        # First, merge overlapping detections to avoid duplicate tracks
+        merged_detections = self.merge_overlapping_detections(detections)
+        
         updated_tracks = {}
-        for detection in detections:
+        for detection in merged_detections:
             detection_centroid = detection['centroid']
+            detection_bbox = detection['bbox']
             min_distance = float('inf')
             matched_track_id = None
             
-            # Match to existing tracks
+            # Match to existing tracks - try both centroid distance and IoU
             for track_id, track in self.tracks.items():
+                # Check centroid distance
                 track_centroid = track['centroid']
                 distance = np.linalg.norm(np.array(detection_centroid) - np.array(track_centroid))
-                if distance < self.max_distance and distance < min_distance:
-                    min_distance = distance
+                
+                # Check bounding box overlap
+                iou = self.bbox_iou(track['bbox'], detection_bbox)
+                
+                # Use a weighted score considering both distance and IoU
+                # Lower distance and higher IoU is better
+                weighted_score = distance / (1 + 10 * iou)  # IoU has higher weight
+                
+                # Increase max_distance for larger boxes (people closer to camera)
+                bbox_size = (detection_bbox[2] - detection_bbox[0]) * (detection_bbox[3] - detection_bbox[1])
+                adaptive_max_distance = self.max_distance * (1 + (bbox_size / 40000))  # Adjust threshold based on size
+                
+                if weighted_score < min_distance and (distance < adaptive_max_distance or iou > 0.25):
+                    min_distance = weighted_score
                     matched_track_id = track_id
                     
             if matched_track_id is not None:
@@ -79,7 +194,7 @@ class PersonTracker:
                     'unconscious_since': None
                 }
                 updated_tracks[track_id] = track
-                
+        
         # Age unmatched tracks
         for track_id in self.tracks.keys():
             if track_id not in updated_tracks:
@@ -87,10 +202,10 @@ class PersonTracker:
                 track['age'] += 1
                 if track['age'] <= self.max_age:
                     updated_tracks[track_id] = track
-                    
-        # Update tracks dictionary
+        
+        # Update tracks dictionary - THIS LINE WAS MISSING
         self.tracks = updated_tracks
-    
+
     def trim_data(self, track):
         current_time = time.time()
         # Keep only data from the last X seconds for unconsciousness check

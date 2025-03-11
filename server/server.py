@@ -23,9 +23,14 @@ from occupancy_grid import OccupancyGrid
 from person_tracker import calculate_EAR, calculate_head_angles, determine_pose, PersonTracker
 from ultrasonic_sensor import UltrasonicSensor
 
+import os
+
+os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
+
+
 # Global constants
 CAMERA = 0
-FIELD_SIZE_CM = 1250.0
+FIELD_SIZE_CM = 2500.0
 CELL_SIZE_CM = 25.0
 DEBUG_CAMERA = True
 
@@ -184,7 +189,9 @@ def camera_process(shared_frame_data, shared_person_status):
             for track_id, track in person_tracker.tracks.items():
                 x1, y1, x2, y2 = track['bbox']
                 is_unconscious = person_tracker.check_unconscious(track)
-                color = (0, 0, 255) if is_unconscious else (0, 255, 0)
+                
+                # Use BGR format for OpenCV color
+                color = (0, 0, 255) if is_unconscious else (0, 255, 0)  # Red for unconscious, Green for conscious
                 status_label = 'Unconscious' if is_unconscious else 'Conscious'
                 
                 # Get the current pose and eye status from the last data entry
@@ -192,18 +199,22 @@ def camera_process(shared_frame_data, shared_person_status):
                 current_pose = current_data.get('pose', 'unknown')
                 current_eye_status = current_data.get('eye_status', 'unknown')
                 
-                # Draw bounding box
-                cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                # Draw bounding box with the appropriate color (not always red)
+                thickness = 5 if is_unconscious else 3
+                cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness)
+                
+                # Calculate better position for the text
+                text_y_pos = max(30, y1 - 10)  # Keep text visible even if bbox is at the top
                 
                 if DEBUG_CAMERA:
                     # Show all information at the top when in debug mode
                     info_text = f'ID {track_id} - {status_label} - Pose: {current_pose} - Eye: {current_eye_status}'
-                    cvzone.putTextRect(image, info_text, [x1 + 8, y1 - 40], 
-                                     thickness=2, scale=1, colorR=color)
+                    cvzone.putTextRect(image, info_text, [x1 + 8, text_y_pos], 
+                                     thickness=2, scale=1, colorR=color, offset=8)
                 else:
                     # Show only ID and consciousness in non-debug mode
-                    cvzone.putTextRect(image, f'ID {track_id} - {status_label}', [x1 + 8, y1 - 40], 
-                                     thickness=2, scale=1, colorR=color)
+                    cvzone.putTextRect(image, f'ID {track_id} - {status_label}', [x1 + 8, text_y_pos], 
+                                     thickness=2, scale=1, colorR=color, offset=8)
             
             # Encode the processed frame for streaming
             ret2, buffer = cv2.imencode('.jpg', image)
@@ -212,26 +223,52 @@ def camera_process(shared_frame_data, shared_person_status):
                 processed_frame = buffer.tobytes()
                 shared_frame_data['current_frame'] = processed_frame
                 
-                # Extract person status for grid markers
+                # Initialize detected_persons list
+                detected_persons = []
+                
+                # Extract person status for grid markers - only if we have tracks
                 if person_tracker.tracks:
-                    person_status = "Conscious"
-                    detected_track_id = None
-                    
-                    # First check for any unconscious person - they take priority
+                    # Process all tracked persons
                     for track_id, track in person_tracker.tracks.items():
-                        if person_tracker.check_unconscious(track):
-                            person_status = "Unconscious"
-                            detected_track_id = track_id
+                        person_status = "Unconscious" if person_tracker.check_unconscious(track) else "Conscious"
+                        
+                        # Add this person to the detected list
+                        detected_persons.append({
+                            'status': person_status,
+                            'track_id': track_id
+                        })
+                
+                # Make a copy of the shared dictionary to modify
+                person_dict = dict(shared_person_status)
+                
+                # Always update detected_persons (empty list if no tracks)
+                person_dict['detected_persons'] = detected_persons
+                
+                # Update legacy fields only if we have detections
+                if detected_persons:
+                    # First check for any unconscious person - they take priority
+                    unconscious_found = False
+                    for person in detected_persons:
+                        if person['status'] == "Unconscious":
+                            person_dict['status'] = "Unconscious"
+                            person_dict['track_id'] = person['track_id']
+                            unconscious_found = True
                             break
                     
-                    # If no unconscious person found, use the first track
-                    if detected_track_id is None and person_tracker.tracks:
-                        detected_track_id = next(iter(person_tracker.tracks.keys()))
-                        
-                    # Update shared person status with both status and track ID
-                    shared_person_status['status'] = person_status
-                    shared_person_status['track_id'] = detected_track_id
-    
+                    # If no unconscious person found, use the first person
+                    if not unconscious_found:
+                        person_dict['status'] = detected_persons[0]['status']
+                        person_dict['track_id'] = detected_persons[0]['track_id']
+                else:
+                    # No detections, clear legacy fields
+                    person_dict['status'] = None
+                    person_dict['track_id'] = None
+                
+                # Update the entire shared dictionary
+                shared_person_status.update(person_dict)
+                
+                print(f"[CAMERA] Detected {len(detected_persons)} persons: {detected_persons}")
+                
     except Exception as e:
         print(f"[CRITICAL] Fatal error in camera process: {e}")
         import traceback
@@ -320,18 +357,42 @@ def grid_process(shared_sensor_data, shared_grid_data, shared_person_status, mot
                         occupancy_grid.update_from_sensors(sensor_data_for_grid, relative_yaw, dt, current_motor_command)
                 
                 # Check for person status from camera process
-                person_status = shared_person_status.get('status')
-                person_track_id = shared_person_status.get('track_id')
+                detected_persons = shared_person_status.get('detected_persons', [])
+                print(f"[GRID] Processing {len(detected_persons)} detected persons: {detected_persons}")
                 
-                if person_status and occupancy_grid.latest_forward is not None:
-                    yaw_rad = math.radians(occupancy_grid.yaw)
-                    person_x_cm = occupancy_grid.robot_x + occupancy_grid.latest_forward * math.sin(yaw_rad)
-                    person_y_cm = occupancy_grid.robot_y + occupancy_grid.latest_forward * math.cos(yaw_rad)
-                    marker_row, marker_col = occupancy_grid.world_to_grid(person_x_cm, person_y_cm)
+                # Clear the current detected IDs set before processing new detections
+                occupancy_grid.current_detected_ids.clear()
+                
+                # Process each detected person
+                for person_data in detected_persons:
+                    person_status = person_data.get('status')
+                    person_track_id = person_data.get('track_id')
                     
-                    # Add the person marker to the grid's persistent list with track ID
-                    # This allows tracking the same person as they move
-                    occupancy_grid.add_person_marker(marker_row, marker_col, person_status, person_track_id)
+                    if person_status and person_track_id is not None:
+                        # Add this track_id to the current detected IDs
+                        occupancy_grid.current_detected_ids.add(person_track_id)
+                        
+                        # Use a default distance of 500 cm (5 meters) if latest_forward is None or >= 500 cm
+                        distance_to_use = occupancy_grid.latest_forward if (occupancy_grid.latest_forward is not None and occupancy_grid.latest_forward < 500) else 500
+                        
+                        yaw_rad = math.radians(-occupancy_grid.yaw)
+                        person_x_cm = occupancy_grid.robot_x + distance_to_use * math.sin(yaw_rad)
+                        person_y_cm = occupancy_grid.robot_y + distance_to_use * math.cos(yaw_rad)
+                        marker_row, marker_col = occupancy_grid.world_to_grid(person_x_cm, person_y_cm)
+                        
+                        print(f"[GRID] Adding person marker: ID={person_track_id}, status={person_status}, position=({marker_row},{marker_col})")
+                        
+                        # Add the person marker to the grid's persistent list with track ID
+                        # This allows tracking the same person as they move
+                        occupancy_grid.add_person_marker(marker_row, marker_col, person_status, person_track_id)
+                
+                # Check if we have any people in view
+                if not detected_persons:
+                    print("[GRID] No persons detected in camera feed - keeping existing markers but not updating positions")
+                
+                # After processing all current detections, update any existing markers 
+                # to ensure they remain on the grid but don't move if not currently detected
+                occupancy_grid.update_person_markers()
                 
                 # Get current grid data (now includes all person markers)
                 grid_data = occupancy_grid.get_grid_data()
@@ -353,7 +414,7 @@ def grid_process(shared_sensor_data, shared_grid_data, shared_person_status, mot
         print(f"[CRITICAL] Fatal error in grid process: {e}")
         import traceback
         traceback.print_exc()
-        
+
 # ========================
 # WEBSOCKET PROCESS
 # ========================
@@ -740,7 +801,11 @@ def main():
         shared_frame_data = manager.dict()
         shared_grid_data = manager.dict()
         shared_sensor_data = manager.dict()
-        shared_person_status = manager.dict()
+        shared_person_status = manager.dict({
+            'status': None,
+            'track_id': None,
+            'detected_persons': []  # Initialize with empty list
+        })        
         motor_command = manager.dict({'command': 'stop'})
         
         print("\n=== Starting Optimized Multiprocessing Server ===\n")

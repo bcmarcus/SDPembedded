@@ -11,7 +11,7 @@
 #include <HardwareSerial.h>
 
 // ====== NETWORK CONFIGURATION ======
-const bool useUCRWiFi = false; // true: use WPA2-Enterprise; false: use standard Wi-Fi
+const bool useUCRWiFi = true; // true: use WPA2-Enterprise; false: use standard Wi-Fi
 
 // Standard Wi-Fi credentials
 const char* standardSSID     = "Imhatin43";
@@ -35,12 +35,12 @@ const int motorTxPin = 23;  // TX pin connected to receiver's RX
 SemaphoreHandle_t motorMutex = NULL;  // Mutex to protect motor UART access
 
 // ====== SERVER CONFIGURATION ======
-const char* serverIP   = "192.168.0.129";
+const char* serverIP   = "10.13.226.252";
 const int   serverPort = 8642;
 
 // ====== QUEUE SETTINGS ======
 const int MSG_BUFFER_SIZE = 256;
-const int SENSOR_QUEUE_SIZE = 32;  // Larger queue to prevent overflow
+const int SENSOR_QUEUE_SIZE = 4;  // Larger queue to prevent overflow
 
 // ====== MPU6050 CONFIGURATION ======
 MPU6050 mpu(Wire);

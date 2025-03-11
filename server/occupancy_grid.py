@@ -12,15 +12,16 @@ class OccupancyGrid:
         self.grid_cols = int(field_size_cm / cell_size_cm)
         self.log_odds_grid = np.full((self.grid_rows, self.grid_cols), -2.0, dtype=float)
         self.robot_x = field_size_cm / 2.0  # Start at center
-        self.robot_y = field_size_cm / 2.0
+        self.robot_y = 4 * field_size_cm / 5.0
         self.yaw = 0.0      # Yaw angle in degrees
         self.latest_forward = None  # Latest forward distance for person tracking
         self.previous_distances = {}  # To detect movement
         self.lock = RLock()
         
-        # New: Add persistent person markers list
+        # Person tracking
         self.person_markers = []  # List to store all detected persons
         self.person_cells = set()  # Set of (row, col) cells that contain persons
+        self.current_detected_ids = set()  # Track IDs currently being detected
         
         # Tuning parameters
         self.log_odds_occupied_inc = 0.9
@@ -29,6 +30,21 @@ class OccupancyGrid:
         self.min_log_odds = -5.0
         self.tolerance = 5.0  # cm threshold to detect movement
         self.max_speed_cm_s = 50.0
+        
+        # Default movement speed in cm/s (0.5334 m/s = 53.34 cm/s)
+        self.default_speed_cm_s = 53.34
+
+    def clear_all_person_markers(self):
+        """Clear all person markers from the grid"""
+        with self.lock:
+            # Reset all person cells to unoccupied
+            for row, col in self.person_cells:
+                self.log_odds_grid[row, col] = -2.0  # Reset to initial value
+            
+            # Clear person markers and cells
+            self.person_markers = []
+            self.person_cells = set()
+            self.current_detected_ids = set()  # Also clear the set of currently detected IDs
 
     def clamp_log_odds(self, value):
         return max(self.min_log_odds, min(self.max_log_odds, value))
@@ -99,10 +115,10 @@ class OccupancyGrid:
             else:
                 self.update_cell_log_odds(r, c, self.log_odds_occupied_inc)
 
-    def update_robot_position(self, distances, dt):
+    def update_robot_position(self, distances, dt, move_command="stop"):
         with self.lock:
             # Only compare if every key in the current readings exists in previous measurements.
-            if all(key in self.previous_distances for key in distances):
+            if all(key in self.previous_distances for key in distances) and move_command not in ["forward", "reverse"]:
                 if all(abs(distances[key] - self.previous_distances[key]) < self.tolerance for key in distances):
                     return  # No significant change; assume the robot is stationary.
 
@@ -121,38 +137,52 @@ class OccupancyGrid:
             # Start with the current robot position.
             new_x = self.robot_x
             new_y = self.robot_y
+            
+            # ONLY update position if we're explicitly moving forward or reverse
+            if move_command in ["forward", "reverse"]:
+                # Calculate displacement based on default speed and time elapsed
+                displacement = self.default_speed_cm_s * dt
+                
+                # Calculate new position based on move command and yaw
+                angle_rad = math.radians(self.yaw)
+                
+                if move_command == "forward":
+                    # Move in the direction of yaw
+                    new_x -= displacement * math.sin(angle_rad)
+                    new_y += displacement * math.cos(angle_rad)
+                    print(f"Moving forward: dx={-displacement * math.sin(angle_rad)}, dy={displacement * math.cos(angle_rad)}")
+                elif move_command == "reverse":
+                    # Move opposite to the direction of yaw
+                    new_x += displacement * math.sin(angle_rad)
+                    new_y -= displacement * math.cos(angle_rad)  # Negative because row 0 is top
+                    print(f"Moving reverse: dx={displacement * math.sin(angle_rad)}, dy={-displacement * math.cos(angle_rad)}")
+                    
+                # Clamp new positions within the field.
+                new_x = max(0, min(self.field_size_cm, new_x))
+                new_y = max(0, min(self.field_size_cm, new_y))
 
-            # Update Y position based on forward and back sensor readings.
-            if valid_f and valid_b:
-                new_y = ((self.field_size_cm - f) + b) / 2.0
-            elif valid_f:
-                new_y = self.field_size_cm - f
-            elif valid_b:
-                new_y = b
-
-            # Update X position based on right and left sensor readings.
-            if valid_r and valid_l:
-                new_x = ((self.field_size_cm - r) + l) / 2.0
-            elif valid_r:
-                new_x = self.field_size_cm - r
-            elif valid_l:
-                new_x = l
-
-            # Clamp new positions within the field.
-            new_x = max(0, min(self.field_size_cm, new_x))
-            new_y = max(0, min(self.field_size_cm, new_y))
-
-            # Limit the position update to the maximum allowed speed.
-            dx = new_x - self.robot_x
-            dy = new_y - self.robot_y
-            dist = math.sqrt(dx * dx + dy * dy)
-            if dist <= self.max_speed_cm_s * dt:
-                self.robot_x = new_x
-                self.robot_y = new_y
+                # Limit the position update to the maximum allowed speed.
+                dx = new_x - self.robot_x
+                dy = new_y - self.robot_y
+                dist = math.sqrt(dx * dx + dy * dy)
+                
+                if dist <= self.max_speed_cm_s * dt:
+                    self.robot_x = new_x
+                    self.robot_y = new_y
+                    print(f"New position: ({self.robot_x}, {self.robot_y})")
+                else:
+                    # Scale the movement to respect max speed
+                    scale_factor = (self.max_speed_cm_s * dt) / dist
+                    self.robot_x += dx * scale_factor
+                    self.robot_y += dy * scale_factor
+                    print(f"Speed limited position: ({self.robot_x}, {self.robot_y})")
+            else:
+                # If move_command is not "forward" or "reverse", don't update position
+                print(f"Not moving: keeping position at ({self.robot_x}, {self.robot_y})")
 
             # Store the current distances for future comparisons.
             self.previous_distances = distances.copy()
-
+            
     # In OccupancyGrid class, optimize update frequency with a max_updates_per_second limiter
     def update_from_sensors(self, distances, yaw, dt, move_command="stop"):
         # Add rate limiting
@@ -165,11 +195,11 @@ class OccupancyGrid:
         with self.lock:
             self.yaw = yaw
             self.latest_forward = distances.get('forward') if (distances.get('forward', 501) <= 500) else None
-            # Only update x,y position if a translation command is active.
             
-            if move_command in ["forward", "reverse"]:
-                self.update_robot_position(distances, dt)
+            # Always update robot position regardless of move_command
+            self.update_robot_position(distances, dt, move_command)
             
+            # Only if we're not moving, update the grid with sensor information
             start_row, start_col = self.get_robot_cell()
             for sensor_name, distance in distances.items():
                 if sensor_name.endswith('_angle'):
@@ -183,34 +213,51 @@ class OccupancyGrid:
     def add_person_marker(self, grid_row, grid_col, status, track_id=None):
         """Add or update a person marker on the grid"""
         with self.lock:
-            # First check if this track_id already exists in any marker
+            # Only update if we have a track_id (which means we can actually see the person)
             if track_id is not None:
+                # Check if this track_id already exists in any marker
+                existing_marker_index = None
                 for i, marker in enumerate(self.person_markers):
                     if marker.get("track_id") == track_id:
-                        # Found the same person - update their position
-                        old_row = marker["grid_row"]
-                        old_col = marker["grid_col"]
-                        
-                        # Remove old position from person cells
-                        if (old_row, old_col) in self.person_cells:
-                            self.person_cells.remove((old_row, old_col))
+                        existing_marker_index = i
+                        break
+                
+                if existing_marker_index is not None:
+                    # Found the same person - update their position
+                    marker = self.person_markers[existing_marker_index]
+                    old_row = marker["grid_row"]
+                    old_col = marker["grid_col"]
+                    
+                    # Only update position if this track_id is actually being detected by the camera now
+                    # This prevents updating position of non-visible people when the robot rotates
+                    if track_id in self.current_detected_ids:
+                        # Check if position changed
+                        if old_row != grid_row or old_col != grid_col:
+                            # Remove old position from person cells
+                            if (old_row, old_col) in self.person_cells:
+                                self.person_cells.remove((old_row, old_col))
                             
-                        # Only change status if it's becoming unconscious or if it was previously unknown
+                            # Reset old position in log_odds_grid
+                            if 0 <= old_row < self.grid_rows and 0 <= old_col < self.grid_cols:
+                                self.log_odds_grid[old_row, old_col] = -2.0  # Reset to initial unoccupied value
+                                print(f"Reset log_odds_grid at old position ({old_row},{old_col})")
+                        
+                        # Determine status (conscious/unconscious logic)
                         new_status = status
                         if marker["status"] == "Unconscious" and status == "Conscious":
-                            # Keep the unconscious status unless they've been conscious for a while
-                            if marker.get("conscious_counter", 0) < 10:  # Require 10 consecutive conscious detections
+                            # Keep as unconscious until we're sure they're conscious
+                            if marker.get("conscious_counter", 0) < 10:
                                 marker["conscious_counter"] = marker.get("conscious_counter", 0) + 1
-                                new_status = "Unconscious"  # Keep as unconscious until we're sure
+                                new_status = "Unconscious"
                             else:
-                                new_status = "Conscious"  # Finally change to conscious
+                                new_status = "Conscious"
                         elif marker["status"] == "Conscious" and status == "Unconscious":
                             # Immediately mark as unconscious
                             new_status = "Unconscious"
                             marker["conscious_counter"] = 0
                         
-                        # Update the marker
-                        self.person_markers[i] = {
+                        # Update the marker with new position
+                        self.person_markers[existing_marker_index] = {
                             "grid_row": grid_row,
                             "grid_col": grid_col,
                             "status": new_status,
@@ -224,54 +271,44 @@ class OccupancyGrid:
                         
                         # Mark this cell as occupied in the log odds grid
                         self.log_odds_grid[grid_row, grid_col] = self.max_log_odds
-                        return
-            
-            # Check if a marker already exists at this position (without track_id)
-            for i, marker in enumerate(self.person_markers):
-                if marker["grid_row"] == grid_row and marker["grid_col"] == grid_col:
-                    # If there's no track_id, just update the status
-                    if marker["status"] != status:
-                        self.person_markers[i]["status"] = status
-                    if track_id is not None:
-                        self.person_markers[i]["track_id"] = track_id
-                    self.person_markers[i]["timestamp"] = time.time()
-                    return
-            
-            # If no existing marker, add a new one
-            self.person_markers.append({
-                "grid_row": grid_row, 
-                "grid_col": grid_col, 
-                "status": status,
-                "timestamp": time.time(),
-                "track_id": track_id,
-                "conscious_counter": 0
-            })
-            
-            # Add to person cells set to prevent overwriting
-            self.person_cells.add((grid_row, grid_col))
-            
-            # Mark this cell as occupied in the log odds grid
-            # Use a high value to ensure it stays occupied
-            self.log_odds_grid[grid_row, grid_col] = self.max_log_odds
-
+                        print(f"Updated marker for track_id {track_id} to position ({grid_row},{grid_col})")
+                    else:
+                        # This person is in our records but not currently visible
+                        # Just update the status if needed, but keep the old position
+                        print(f"Track_id {track_id} not in current detections, keeping at ({old_row},{old_col})")
+                else:
+                    # If no existing marker with this track_id, add a new one
+                    self.person_markers.append({
+                        "grid_row": grid_row, 
+                        "grid_col": grid_col, 
+                        "status": status,
+                        "timestamp": time.time(),
+                        "track_id": track_id,
+                        "conscious_counter": 0
+                    })
+                    
+                    # Add to person cells set to prevent overwriting
+                    self.person_cells.add((grid_row, grid_col))
+                    
+                    # Mark this cell as occupied in the log odds grid
+                    self.log_odds_grid[grid_row, grid_col] = self.max_log_odds
+                    print(f"Added new marker for track_id {track_id} at position ({grid_row},{grid_col})")
+    
     def update_person_markers(self):
-        """Remove expired person markers (only for conscious persons)"""
-        current_time = time.time()
+        """Update person markers - people not currently detected should remain in place"""
         with self.lock:
-            updated_markers = []
             updated_cells = set()
             
             for marker in self.person_markers:
-                # Keep unconscious persons indefinitely
-                if marker["status"] == "Unconscious":
-                    updated_markers.append(marker)
-                    updated_cells.add((marker["grid_row"], marker["grid_col"]))
-                # For conscious persons, keep only recent ones (within last 30 seconds)
-                elif current_time - marker.get("timestamp", 0) < 30:
-                    updated_markers.append(marker)
-                    updated_cells.add((marker["grid_row"], marker["grid_col"]))
+                grid_row = marker["grid_row"] 
+                grid_col = marker["grid_col"]
+                updated_cells.add((grid_row, grid_col))
+                
+                # Ensure the cell is still marked as occupied in the log_odds_grid
+                if 0 <= grid_row < self.grid_rows and 0 <= grid_col < self.grid_cols:
+                    self.log_odds_grid[grid_row, grid_col] = self.max_log_odds
             
-            self.person_markers = updated_markers
+            # Update the person_cells set
             self.person_cells = updated_cells
 
     def get_grid_data(self):
@@ -289,25 +326,21 @@ class OccupancyGrid:
                 "yaw": self.yaw,
                 "person_markers": self.person_markers  # Include the persistent markers
             }
-        
+            
     def reset_position(self):
-        """Reset robot position to center of the field, reset yaw to 0 degrees, and clear the occupancy grid."""
+        """Reset robot position to center of the field, reset yaw to 0 degrees, and clear the occupancy grid and person detections."""
         with self.lock:
             # Reset robot position and orientation
             self.robot_x = self.field_size_cm / 2.0
-            self.robot_y = self.field_size_cm / 2.0
+            self.robot_y = 4 * self.field_size_cm / 5.0
             self.yaw = 0.0
             self.latest_forward = None
             self.previous_distances = {}  # Reset distance history
             
+            # Clear all person markers
+            self.clear_all_person_markers()
+            
             # Reset the occupancy grid data - set all cells back to the initial log odds value
-            # But preserve person marker cells
-            new_grid = np.full((self.grid_rows, self.grid_cols), -2.0, dtype=float)
+            self.log_odds_grid = np.full((self.grid_rows, self.grid_cols), -2.0, dtype=float)
             
-            # Restore the person cells to max occupancy
-            for row, col in self.person_cells:
-                new_grid[row, col] = self.max_log_odds
-                
-            self.log_odds_grid = new_grid
-            
-            print(f"[INFO] Robot position reset to ({self.robot_x}, {self.robot_y}) with yaw=0 and occupancy grid cleared while preserving person markers")
+            print(f"[INFO] Robot position reset to ({self.robot_x}, {self.robot_y}) with yaw=0 and occupancy grid cleared including all person markers")
