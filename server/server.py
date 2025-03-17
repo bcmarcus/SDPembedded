@@ -30,7 +30,7 @@ os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 
 # Global constants
 CAMERA = 0
-FIELD_SIZE_CM = 2500.0
+FIELD_SIZE_CM = 1250.0
 CELL_SIZE_CM = 25.0
 DEBUG_CAMERA = True
 
