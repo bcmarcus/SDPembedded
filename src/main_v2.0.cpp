@@ -35,7 +35,7 @@ const int motorTxPin = 23;  // TX pin connected to receiver's RX
 SemaphoreHandle_t motorMutex = NULL;  // Mutex to protect motor UART access
 
 // ====== SERVER CONFIGURATION ======
-const char* serverIP   = "10.13.226.252";
+const char* serverIP   = "10.13.219.130";
 const int   serverPort = 8642;
 
 // ====== QUEUE SETTINGS ======
@@ -380,6 +380,7 @@ void watchdogTask(void *pvParameters) {
     esp_task_wdt_reset();
     
     // Monitor WiFi status for LED indicator - but don't interfere with the blinking patterns
+    digitalWrite(serverLedPin, HIGH);
     // This was removed to avoid conflicts with the blinking patterns in the network task
     
     // Short delay
